@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=截图工具
+GenericName=屏幕截图
+Comment=一个简单的截图工具
+Exec=/home/thin-time/Projects/Screenshot/build/ScreenshotLinux
+Icon=camera-photo
+Terminal=false
+Type=Application
+Categories=Utility;Graphics;
+StartupNotify=true
