@@ -1,0 +1,9 @@
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/ScreenshotLinux.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/edit_cache.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/rebuild_cache.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/list_install_components.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/install.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/install/local.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/install/strip.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/ScreenshotLinux_autogen_timestamp_deps.dir
+/home/thin-time/Projects/Screenshot/build/CMakeFiles/ScreenshotLinux_autogen.dir

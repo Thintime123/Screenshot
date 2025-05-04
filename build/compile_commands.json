@@ -1,0 +1,20 @@
+[
+{
+  "directory": "/home/thin-time/Projects/Screenshot/build",
+  "command": "/usr/bin/g++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/thin-time/Projects/Screenshot/build/ScreenshotLinux_autogen/include -isystem /usr/include/qt6/QtCore -isystem /usr/include/qt6 -isystem /usr/lib/qt6/mkspecs/linux-g++ -isystem /usr/include/qt6/QtWidgets -isystem /usr/include/qt6/QtGui -g -std=gnu++17 -mno-direct-extern-access -o CMakeFiles/ScreenshotLinux.dir/ScreenshotLinux_autogen/mocs_compilation.cpp.o -c /home/thin-time/Projects/Screenshot/build/ScreenshotLinux_autogen/mocs_compilation.cpp",
+  "file": "/home/thin-time/Projects/Screenshot/build/ScreenshotLinux_autogen/mocs_compilation.cpp",
+  "output": "CMakeFiles/ScreenshotLinux.dir/ScreenshotLinux_autogen/mocs_compilation.cpp.o"
+},
+{
+  "directory": "/home/thin-time/Projects/Screenshot/build",
+  "command": "/usr/bin/g++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/thin-time/Projects/Screenshot/build/ScreenshotLinux_autogen/include -isystem /usr/include/qt6/QtCore -isystem /usr/include/qt6 -isystem /usr/lib/qt6/mkspecs/linux-g++ -isystem /usr/include/qt6/QtWidgets -isystem /usr/include/qt6/QtGui -g -std=gnu++17 -mno-direct-extern-access -o CMakeFiles/ScreenshotLinux.dir/main.cpp.o -c /home/thin-time/Projects/Screenshot/ScreenshotLinux/main.cpp",
+  "file": "/home/thin-time/Projects/Screenshot/ScreenshotLinux/main.cpp",
+  "output": "CMakeFiles/ScreenshotLinux.dir/main.cpp.o"
+},
+{
+  "directory": "/home/thin-time/Projects/Screenshot/build",
+  "command": "/usr/bin/g++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/thin-time/Projects/Screenshot/build/ScreenshotLinux_autogen/include -isystem /usr/include/qt6/QtCore -isystem /usr/include/qt6 -isystem /usr/lib/qt6/mkspecs/linux-g++ -isystem /usr/include/qt6/QtWidgets -isystem /usr/include/qt6/QtGui -g -std=gnu++17 -mno-direct-extern-access -o CMakeFiles/ScreenshotLinux.dir/screenshotwindow.cpp.o -c /home/thin-time/Projects/Screenshot/ScreenshotLinux/screenshotwindow.cpp",
+  "file": "/home/thin-time/Projects/Screenshot/ScreenshotLinux/screenshotwindow.cpp",
+  "output": "CMakeFiles/ScreenshotLinux.dir/screenshotwindow.cpp.o"
+}
+]

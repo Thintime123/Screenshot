@@ -1,0 +1,2 @@
+set(__QT_DEPLOY_TARGET_ScreenshotLinux_FILE /home/thin-time/Projects/Screenshot/build/ScreenshotLinux)
+set(__QT_DEPLOY_TARGET_ScreenshotLinux_TYPE EXECUTABLE)

@@ -1,0 +1,79 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-Debug-2041847244eeb09de7fa.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.16"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "ScreenshotLinux",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ScreenshotLinux::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ScreenshotLinux-Debug-0533910370a6886fcfd6.json",
+					"name" : "ScreenshotLinux",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ScreenshotLinux_autogen::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ScreenshotLinux_autogen-Debug-ab4659f92bd05db92c80.json",
+					"name" : "ScreenshotLinux_autogen",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ScreenshotLinux_autogen_timestamp_deps::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ScreenshotLinux_autogen_timestamp_deps-Debug-db66588ee4487dbda5cb.json",
+					"name" : "ScreenshotLinux_autogen_timestamp_deps",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/thin-time/Projects/Screenshot/build",
+		"source" : "/home/thin-time/Projects/Screenshot/ScreenshotLinux"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 8
+	}
+}
