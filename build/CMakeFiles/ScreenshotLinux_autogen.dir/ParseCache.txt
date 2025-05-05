@@ -400,6 +400,7 @@
  mdp:/usr/include/qt6/QtGui/QPainterPath
  mdp:/usr/include/qt6/QtGui/QPen
  mdp:/usr/include/qt6/QtGui/QPixmap
+ mdp:/usr/include/qt6/QtGui/QRegion
  mdp:/usr/include/qt6/QtGui/qaction.h
  mdp:/usr/include/qt6/QtGui/qbitmap.h
  mdp:/usr/include/qt6/QtGui/qbrush.h

@@ -401,6 +401,7 @@ ScreenshotLinux_autogen/timestamp: \
 	/usr/include/qt6/QtGui/QPainterPath \
 	/usr/include/qt6/QtGui/QPen \
 	/usr/include/qt6/QtGui/QPixmap \
+	/usr/include/qt6/QtGui/QRegion \
 	/usr/include/qt6/QtGui/qaction.h \
 	/usr/include/qt6/QtGui/qbitmap.h \
 	/usr/include/qt6/QtGui/qbrush.h \

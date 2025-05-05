@@ -15,6 +15,7 @@
 #include <QMenu> // 添加菜单支持
 #include <QVector> // 用于存储画笔路径点
 #include <QPainterPath> // 用于画笔路径
+#include <QRegion> // 用于创建遮罩区域
 
 class ScreenshotWindow : public QWidget
 {
@@ -109,6 +110,10 @@ private:
     QAction *m_screenshotAction;   // 截图动作
     QAction *m_aboutAction;        // 关于动作
     QAction *m_quitAction;         // 退出动作
+
+    QRegion m_maskRegion;          // 遮罩区域，用于防止区域外点击
+    
+    void safeTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
 };
 
 #endif // SCREENSHOTWINDOW_H

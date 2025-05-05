@@ -69,7 +69,8 @@ ScreenshotWindow::ScreenshotWindow(QWidget *parent)
     connect(m_cancelAction, &QAction::triggered, this, &ScreenshotWindow::cancelScreenshot);
     connect(m_finishAction, &QAction::triggered, this, &ScreenshotWindow::finishScreenshot);
     
-    setupTrayIcon();
+    // 不在构造函数中初始化托盘图标，而是由main.cpp调用
+    // setupTrayIcon();
     
     hide();
 }
@@ -83,10 +84,24 @@ ScreenshotWindow::~ScreenshotWindow()
 
 void ScreenshotWindow::setupTrayIcon()
 {
+    // 首先检查当前环境
+    bool isWayland = QGuiApplication::platformName().contains("wayland", Qt::CaseInsensitive);
+    qDebug() << "设置托盘图标, 平台:" << QGuiApplication::platformName() 
+             << (isWayland ? "(Wayland)" : "(X11/其他)");
+    
+    // 创建托盘菜单
     m_trayIconMenu = new QMenu(this);
     
     m_screenshotAction = new QAction("开始截图", this);
-    connect(m_screenshotAction, &QAction::triggered, this, &ScreenshotWindow::startScreenshot);
+    // 在Wayland环境下, 使用一个lambda中间层来调用startScreenshot，以避免直接调用
+    if(isWayland) {
+        connect(m_screenshotAction, &QAction::triggered, this, [this]() {
+            qDebug() << "通过菜单项触发截图(Wayland安全方式)";
+            QTimer::singleShot(100, this, &ScreenshotWindow::startScreenshot);
+        });
+    } else {
+        connect(m_screenshotAction, &QAction::triggered, this, &ScreenshotWindow::startScreenshot);
+    }
     m_trayIconMenu->addAction(m_screenshotAction);
     
     m_aboutAction = new QAction("关于", this);
@@ -96,286 +111,71 @@ void ScreenshotWindow::setupTrayIcon()
     m_trayIconMenu->addSeparator();
     
     m_quitAction = new QAction("退出", this);
-    connect(m_quitAction, &QAction::triggered, this, &ScreenshotWindow::quitApplication);
+    // 在Wayland环境下, 退出也需要特殊处理
+    if(isWayland) {
+        connect(m_quitAction, &QAction::triggered, this, [this]() {
+            qDebug() << "通过菜单项退出(Wayland安全方式)";
+            QTimer::singleShot(200, this, &ScreenshotWindow::quitApplication);
+        });
+    } else {
+        connect(m_quitAction, &QAction::triggered, this, &ScreenshotWindow::quitApplication);
+    }
     m_trayIconMenu->addAction(m_quitAction);
     
+    // 创建托盘图标
     m_trayIcon = new QSystemTrayIcon(this);
     
+    // 设置图标
     QIcon icon = QIcon::fromTheme("camera-photo");
     if (icon.isNull()) {
         icon = QApplication::style()->standardIcon(QStyle::SP_ComputerIcon);
     }
     m_trayIcon->setIcon(icon);
-    
     m_trayIcon->setToolTip("截图工具");
     
+    // 设置托盘菜单
     m_trayIcon->setContextMenu(m_trayIconMenu);
     
-    connect(m_trayIcon, &QSystemTrayIcon::activated, this, &ScreenshotWindow::trayIconActivated);
-    
-    m_trayIcon->show();
-}
-
-void ScreenshotWindow::startScreenshot()
-{
-    m_isScreenshotMode = true;
-    m_isSelecting = false;
-    m_hasSelected = false;
-    m_drawItems.clear();
-    m_undoItems.clear();
-    
-    grabScreen();
-    
-    showFullScreen();
-}
-
-void ScreenshotWindow::grabScreen()
-{
-    // 获取屏幕截图的更可靠方法
-    bool captureSuccess = false;
-    
-    // 检测当前显示服务器环境
-    bool isWayland = QGuiApplication::platformName().contains("wayland", Qt::CaseInsensitive);
-    qDebug() << "当前平台:" << QGuiApplication::platformName() << (isWayland ? "(Wayland)" : "(可能是X11)");
-    
-    // 1. 首先尝试使用外部工具方法 (通常在Wayland环境下更可靠)
-    QString tempFile = QDir::tempPath() + "/screenshot_" + 
-                      QString::number(QRandomGenerator::global()->generate()) + ".png";
-    
-    // 确保临时文件路径没有非ASCII字符
-    if (tempFile.contains(QRegularExpression("[^\\x00-\\x7F]"))) {
-        tempFile = "/tmp/screenshot_" + 
-                  QString::number(QRandomGenerator::global()->generate()) + ".png";
-    }
-    
-    qDebug() << "使用临时文件:" << tempFile;
-    
-    QStringList possibleCmds;
-    
-    // 检查可用的屏幕捕获工具
-    if (QFile::exists("/usr/bin/gnome-screenshot")) {
-        possibleCmds << "/usr/bin/gnome-screenshot -f \"" + tempFile + "\"";
-    }
-    
-    if (QFile::exists("/usr/bin/ksnip")) {
-        possibleCmds << "/usr/bin/ksnip -f \"" + tempFile + "\"";
-    }
-    
-    if (QFile::exists("/usr/bin/spectacle")) {
-        possibleCmds << "/usr/bin/spectacle -b -n -o \"" + tempFile + "\"";
-    }
-    
-    if (QFile::exists("/usr/bin/scrot")) {
-        possibleCmds << "/usr/bin/scrot \"" + tempFile + "\"";
-    }
-    
-    if (QFile::exists("/usr/bin/maim")) {
-        possibleCmds << "/usr/bin/maim \"" + tempFile + "\"";
-    }
-    
-    if (QFile::exists("/usr/bin/import")) {
-        possibleCmds << "/usr/bin/import -window root \"" + tempFile + "\"";
-    }
-    
-    if (isWayland && QFile::exists("/usr/bin/grim")) {
-        possibleCmds << "/usr/bin/grim \"" + tempFile + "\"";
-    }
-    
-    for (const QString &cmd : possibleCmds) {
-        if (captureSuccess) break;
-        
-        qDebug() << "尝试使用外部命令捕获屏幕:" << cmd;
-        
-        QProcess process;
-        process.setProcessChannelMode(QProcess::MergedChannels);
-        
-        try {
-            process.start("bash", QStringList() << "-c" << cmd);
-            
-            if (process.waitForFinished(5000)) {
-                if (process.exitCode() == 0) {
-                    QFile file(tempFile);
-                    if (file.exists() && file.size() > 0) {
-                        qDebug() << "临时文件创建成功，大小:" << file.size() << "字节";
-                        
-                        // 加载临时文件
-                        QImage capturedImage(tempFile);
-                        if (!capturedImage.isNull()) {
-                            m_screenPixmap = QPixmap::fromImage(capturedImage);
-                            qDebug() << "使用外部工具" << cmd << "捕获屏幕成功";
-                            captureSuccess = true;
-                            
-                            // 为安全起见，删除临时文件
-                            QFile::remove(tempFile);
-                            break;
-                        } else {
-                            qDebug() << "临时文件创建成功但加载失败";
-                        }
-                    } else {
-                        qDebug() << "临时文件不存在或为空";
-                    }
-                } else {
-                    qDebug() << "命令执行失败:" << process.readAll();
-                }
-            } else {
-                qDebug() << "命令执行超时";
-            }
-        } catch (const std::exception& e) {
-            qDebug() << "执行外部命令时捕获到异常:" << e.what();
-        } catch (...) {
-            qDebug() << "执行外部命令时捕获到未知异常";
-        }
-    }
-    
-    // 2. 如果外部工具方法失败，尝试Qt原生方法
-    if (!captureSuccess) {
-        qDebug() << "所有外部工具捕获失败，尝试Qt原生方法";
-        
-        QList<QScreen*> screens = QGuiApplication::screens();
-        
-        if (screens.isEmpty()) {
-            qDebug() << "错误：无法获取任何屏幕";
-            return;
-        }
-        
-        // 获取主屏幕几何信息作为基准
-        QScreen *primaryScreen = QGuiApplication::primaryScreen();
-        QRect totalGeometry = primaryScreen->geometry();
-        
-        // 计算所有屏幕的总几何区域
-        for (QScreen *screen : screens) {
-            totalGeometry = totalGeometry.united(screen->geometry());
-        }
-        
-        qDebug() << "合并的屏幕几何区域:" << totalGeometry;
-        
-        // 创建一个足够大的QPixmap来容纳所有屏幕
-        m_screenPixmap = QPixmap(totalGeometry.width(), totalGeometry.height());
-        m_screenPixmap.fill(Qt::black); // 填充背景，以防某些区域没有覆盖到
-        
-        // 在合并的屏幕区域上绘制各个屏幕的内容
-        QPainter painter(&m_screenPixmap);
-        
-        bool anyScreenCaptured = false;
-        
-        for (QScreen *screen : screens) {
-            QRect screenGeometry = screen->geometry();
-            qDebug() << "尝试捕获屏幕:" << screen->name() << "几何区域:" << screenGeometry;
-            
-            // 尝试捕获此屏幕
-            QPixmap screenPixmap;
-            
-            // 尝试直接从screen捕获
-            try {
-                screenPixmap = screen->grabWindow(0);
-                
-                if (screenPixmap.isNull()) {
-                    qDebug() << "通过screen->grabWindow(0)捕获屏幕" << screen->name() << "失败，尝试替代方法";
-                    
-                    // 尝试替代方法 - 限定区域捕获
-                    screenPixmap = screen->grabWindow(0, 0, 0, screenGeometry.width(), screenGeometry.height());
-                }
-            } catch (const std::exception& e) {
-                qDebug() << "捕获屏幕" << screen->name() << "时发生异常:" << e.what();
-                screenPixmap = QPixmap(); // 确保是空的
-            } catch (...) {
-                qDebug() << "捕获屏幕" << screen->name() << "时发生未知异常";
-                screenPixmap = QPixmap(); // 确保是空的
-            }
-            
-            // 如果此屏幕捕获成功，绘制到合并的图像中
-            if (!screenPixmap.isNull()) {
-                // 计算此屏幕相对于合并区域的偏移
-                QPoint offset = screenGeometry.topLeft() - totalGeometry.topLeft();
-                
-                qDebug() << "屏幕" << screen->name() << "捕获成功，大小:" << screenPixmap.size();
-                qDebug() << "绘制到位置:" << offset;
-                
-                // 将此屏幕图像绘制到合适的位置
-                painter.drawPixmap(offset, screenPixmap);
-                anyScreenCaptured = true;
-            } else {
-                qDebug() << "警告：屏幕" << screen->name() << "捕获失败";
-            }
-        }
-        
-        painter.end();
-        
-        // 如果所有屏幕都捕获失败，尝试备用方法
-        if (!anyScreenCaptured) {
-            qDebug() << "所有屏幕捕获都失败，尝试备用方法";
-            
-            // 回到最简单的方法，只捕获主屏幕
-            try {
-                m_screenPixmap = primaryScreen->grabWindow(0);
-                
-                if (m_screenPixmap.isNull()) {
-                    qDebug() << "主屏幕备用捕获方法1失败，尝试方法2";
-                    m_screenPixmap = primaryScreen->grabWindow(0, 0, 0, primaryScreen->geometry().width(), primaryScreen->geometry().height());
-                }
-            } catch (...) {
-                qDebug() << "主屏幕备用捕获也失败";
-                m_screenPixmap = QPixmap(); // 确保是空的
-            }
-        }
-        
-        if (!m_screenPixmap.isNull()) {
-            captureSuccess = true;
-        }
-    }
-    
-    // 3. 如果以上方法都失败，尝试使用XDG-Desktop-Portal（适用于Wayland）
-    if (!captureSuccess && isWayland) {
-        qDebug() << "尝试使用XDG-Desktop-Portal方法(DBus方式)";
-        
-        // 为了简化实现，使用临时脚本来调用xdg-desktop-portal
-        QString scriptFile = QDir::tempPath() + "/screenshot_helper_" + 
-                           QString::number(QRandomGenerator::global()->generate()) + ".sh";
-        
-        QFile file(scriptFile);
-        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            QTextStream out(&file);
-            out << "#!/bin/bash\n";
-            out << "dbus-send --session --print-reply --dest=org.freedesktop.portal.Desktop "
-                   "/org/freedesktop/portal/desktop org.freedesktop.portal.Screenshot.Screenshot "
-                   "boolean:true string:\"" << tempFile << "\" > /dev/null 2>&1\n";
-            out << "sleep 3\n";  // 给用户时间选择区域
-            out << "exit 0\n";
-            file.close();
-            
-            QFile::setPermissions(scriptFile, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
-            
-            QProcess process;
-            process.start("bash", QStringList() << scriptFile);
-            
-            if (process.waitForFinished(10000)) {
-                if (QFile::exists(tempFile)) {
-                    QImage capturedImage(tempFile);
-                    if (!capturedImage.isNull()) {
-                        m_screenPixmap = QPixmap::fromImage(capturedImage);
-                        qDebug() << "使用XDG-Desktop-Portal方法捕获屏幕成功";
-                        captureSuccess = true;
-                    }
-                }
-            }
-            
-            QFile::remove(scriptFile);
-            QFile::remove(tempFile);
-        }
-    }
-    
-    // 最后检查是否成功
-    if (m_screenPixmap.isNull()) {
-        qDebug() << "错误：无法捕获任何屏幕";
-        QMessageBox::critical(nullptr, "截图失败", "无法捕获屏幕内容，请检查您的显示设置或尝试重新启动应用程序。\n\n"
-                              "如果您使用的是Wayland显示服务器，请确保安装了以下工具之一：\n"
-                              "- gnome-screenshot\n"
-                              "- ksnip\n"
-                              "- spectacle\n"
-                              "- scrot\n"
-                              "- grim (推荐用于Wayland)\n");
+    // 将托盘信号连接到一个安全的中间处理函数
+    if(isWayland) {
+        disconnect(m_trayIcon, &QSystemTrayIcon::activated, this, &ScreenshotWindow::trayIconActivated);
+        connect(m_trayIcon, &QSystemTrayIcon::activated, this, &ScreenshotWindow::safeTrayIconActivated);
     } else {
-        qDebug() << "屏幕捕获成功，总大小:" << m_screenPixmap.size();
+        connect(m_trayIcon, &QSystemTrayIcon::activated, this, &ScreenshotWindow::trayIconActivated);
+    }
+    
+    // 确保图标可见
+    m_trayIcon->show();
+    qDebug() << "托盘图标设置完成, 可见性:" << m_trayIcon->isVisible();
+}
+
+void ScreenshotWindow::safeTrayIconActivated(QSystemTrayIcon::ActivationReason reason)
+{
+    qDebug() << "Wayland安全模式：托盘图标被激活，原因:" << static_cast<int>(reason);
+    
+    // 使用全异步方式处理托盘事件，避免Wayland环境下的崩溃
+    if (reason == QSystemTrayIcon::Trigger) {
+        qDebug() << "Wayland安全模式：触发截图操作（延迟执行）";
+        
+        // 关键：使用QueuedConnection而不是直接调用或单纯的延时
+        QMetaObject::invokeMethod(this, [this]() {
+            qDebug() << "Wayland安全模式：开始执行异步截图操作";
+            
+            // 二次确认程序仍在运行
+            if (QCoreApplication::instance() && !QCoreApplication::closingDown()) {
+                QTimer::singleShot(200, this, [this]() {
+                    qDebug() << "Wayland安全模式：实际执行截图操作";
+                    startScreenshot();
+                });
+            } else {
+                qDebug() << "Wayland安全模式：应用程序正在关闭，取消操作";
+            }
+        }, Qt::QueuedConnection);
+    } else if (reason == QSystemTrayIcon::Context) {
+        qDebug() << "Wayland安全模式：右键菜单被触发";
+        // 右键菜单由Qt自动处理
+    } else {
+        qDebug() << "Wayland安全模式：其他类型的托盘激活:" << static_cast<int>(reason);
     }
 }
 
@@ -386,686 +186,561 @@ void ScreenshotWindow::trayIconActivated(QSystemTrayIcon::ActivationReason reaso
     }
 }
 
+void ScreenshotWindow::startScreenshot()
+{
+    qDebug() << "开始截图操作";
+    m_isScreenshotMode = true;
+    m_isSelecting = false;
+    m_hasSelected = false;
+    m_drawItems.clear();
+    m_undoItems.clear();
+    m_currentMode = DrawMode::None;
+    
+    // 在Wayland环境下额外处理
+    bool isWayland = QGuiApplication::platformName().contains("wayland", Qt::CaseInsensitive);
+    if (isWayland) {
+        qDebug() << "Wayland环境检测到，使用特殊处理";
+        
+        // 先隐藏所有可能干扰的UI元素
+        if (m_toolBar) m_toolBar->hide();
+        if (m_trayIcon) m_trayIcon->hide();
+        
+        // 确保窗口不会影响屏幕捕获
+        hide();
+        
+        // 给系统一些时间来处理窗口隐藏
+        QTimer::singleShot(300, this, [this]() {
+            grabScreen();
+            
+            // 在屏幕截图完成后显示窗口
+            if (!m_screenPixmap.isNull()) {
+                showFullScreen();
+                
+                // 确保窗口覆盖整个屏幕
+                QScreen *screen = QGuiApplication::primaryScreen();
+                if (screen) {
+                    QRect screenGeom = screen->geometry();
+                    setGeometry(screenGeom);
+                    
+                    qDebug() << "设置窗口几何形状:" << screenGeom;
+                    qDebug() << "当前窗口几何形状:" << geometry();
+                    qDebug() << "截图大小:" << m_screenPixmap.size();
+                    
+                    // 重要：确保截图大小与屏幕匹配
+                    if (m_screenPixmap.size() != screenGeom.size()) {
+                        qDebug() << "调整截图大小以匹配屏幕";
+                        
+                        QPixmap scaledPixmap;
+                        // 如果截图比屏幕小，则放大
+                        if (m_screenPixmap.width() < screenGeom.width() || 
+                            m_screenPixmap.height() < screenGeom.height()) {
+                            scaledPixmap = m_screenPixmap.scaled(
+                                screenGeom.size(),
+                                Qt::KeepAspectRatio,
+                                Qt::SmoothTransformation);
+                        } else {
+                            // 如果截图过大，则确保它适合屏幕
+                            scaledPixmap = m_screenPixmap.scaled(
+                                screenGeom.size(),
+                                Qt::KeepAspectRatio,
+                                Qt::SmoothTransformation);
+                        }
+                        
+                        // 只在有效情况下更新截图
+                        if (!scaledPixmap.isNull()) {
+                            m_screenPixmap = scaledPixmap;
+                        }
+                    }
+                }
+            } else {
+                QMessageBox::critical(nullptr, "截图失败", "无法捕获屏幕");
+            }
+        });
+    } else {
+        // 非Wayland环境使用原有方法
+        grabScreen();
+        showFullScreen();
+    }
+}
+
+void ScreenshotWindow::grabScreen()
+{
+    // 清除之前的截图数据
+    m_screenPixmap = QPixmap();
+    
+    // 获取屏幕截图的更可靠方法
+    bool captureSuccess = false;
+    
+    // 检测当前显示服务器环境
+    bool isWayland = QGuiApplication::platformName().contains("wayland", Qt::CaseInsensitive);
+    qDebug() << "当前平台:" << QGuiApplication::platformName() << (isWayland ? "(Wayland)" : "(可能是X11)");
+    
+    // 在Wayland环境下，优先使用外部工具进行截图，避免放大问题
+    if (isWayland) {
+        // 尝试使用特定的Wayland屏幕捕获工具
+        QString tempFile = QDir::tempPath() + "/screenshot_" + 
+                          QString::number(QRandomGenerator::global()->generate()) + ".png";
+        
+        // 确保临时文件路径没有非ASCII字符
+        if (tempFile.contains(QRegularExpression("[^\\x00-\\x7F]"))) {
+            tempFile = "/tmp/screenshot_" + 
+                      QString::number(QRandomGenerator::global()->generate()) + ".png";
+        }
+        
+        qDebug() << "使用临时文件:" << tempFile;
+        
+        // 特别优先使用适合Wayland的工具
+        QStringList waylandCmds;
+        
+        if (QFile::exists("/usr/bin/grim")) {
+            waylandCmds << "/usr/bin/grim \"" + tempFile + "\"";
+        }
+        
+        if (QFile::exists("/usr/bin/spectacle")) {
+            waylandCmds << "/usr/bin/spectacle -b -n -o \"" + tempFile + "\"";
+        }
+        
+        for (const QString &cmd : waylandCmds) {
+            if (captureSuccess) break;
+            
+            qDebug() << "尝试使用Wayland专用命令捕获屏幕:" << cmd;
+            
+            QProcess process;
+            process.setProcessChannelMode(QProcess::MergedChannels);
+            
+            try {
+                process.start("bash", QStringList() << "-c" << cmd);
+                
+                if (process.waitForFinished(5000)) {
+                    if (process.exitCode() == 0) {
+                        QFile file(tempFile);
+                        if (file.exists() && file.size() > 0) {
+                            qDebug() << "临时文件创建成功，大小:" << file.size() << "字节";
+                            
+                            // 加载临时文件
+                            QImage capturedImage(tempFile);
+                            if (!capturedImage.isNull()) {
+                                m_screenPixmap = QPixmap::fromImage(capturedImage);
+                                qDebug() << "使用Wayland专用工具" << cmd << "捕获屏幕成功";
+                                captureSuccess = true;
+                                
+                                // 为安全起见，删除临时文件
+                                QFile::remove(tempFile);
+                                break;
+                            }
+                        }
+                    } else {
+                        qDebug() << "命令执行失败，退出码:" << process.exitCode();
+                        qDebug() << "错误输出:" << process.readAllStandardError();
+                    }
+                } else {
+                    qDebug() << "命令执行超时";
+                }
+            } catch (...) {
+                qDebug() << "执行Wayland命令时捕获到异常";
+            }
+        }
+        
+        // 如果Wayland专用工具失败，尝试通过XDG-Desktop-Portal截图
+        if (!captureSuccess) {
+            qDebug() << "尝试使用XDG-Desktop-Portal方法";
+            
+            // 使用通用XDG-Portal的截图API（适用于大多数现代桌面环境）
+            QProcess process;
+            QString scriptPath = QDir::tempPath() + "/xdg_screenshot_" + 
+                               QString::number(QRandomGenerator::global()->generate()) + ".sh";
+            
+            QFile script(scriptPath);
+            if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                QTextStream out(&script);
+                out << "#!/bin/bash\n";
+                // 使用xdg-desktop-portal提供的截图服务
+                out << "dbus-send --session --print-reply --dest=org.freedesktop.portal.Desktop "
+                       "/org/freedesktop/portal/desktop org.freedesktop.portal.Screenshot.Screenshot "
+                       "boolean:true string:\"" << tempFile << "\" > /dev/null 2>&1\n";
+                out << "sleep 2\n";  // 给操作系统时间保存截图
+                script.close();
+                
+                // 使脚本可执行
+                QFile::setPermissions(scriptPath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+                
+                process.start("bash", QStringList() << scriptPath);
+                if (process.waitForFinished(10000)) {  // 等待10秒
+                    // 检查文件是否创建
+                    QFile file(tempFile);
+                    if (file.exists() && file.size() > 0) {
+                        QImage capturedImage(tempFile);
+                        if (!capturedImage.isNull()) {
+                            m_screenPixmap = QPixmap::fromImage(capturedImage);
+                            captureSuccess = true;
+                            qDebug() << "使用XDG-Desktop-Portal捕获屏幕成功";
+                        }
+                    }
+                }
+                
+                // 清理
+                QFile::remove(scriptPath);
+                QFile::remove(tempFile);
+            }
+        }
+    }
+    
+    // 如果上述方法都失败，或者不是Wayland环境，尝试使用其他工具
+    if (!captureSuccess) {
+        qDebug() << "尝试使用备用截图方法";
+        
+        QString tempFile = QDir::tempPath() + "/screenshot_" + 
+                      QString::number(QRandomGenerator::global()->generate()) + ".png";
+        
+        QStringList possibleCmds;
+        
+        // 检查可用的屏幕捕获工具
+        if (QFile::exists("/usr/bin/gnome-screenshot")) {
+            possibleCmds << "/usr/bin/gnome-screenshot -f \"" + tempFile + "\"";
+        }
+        
+        if (QFile::exists("/usr/bin/ksnip")) {
+            possibleCmds << "/usr/bin/ksnip -f \"" + tempFile + "\"";
+        }
+        
+        if (QFile::exists("/usr/bin/spectacle")) {
+            possibleCmds << "/usr/bin/spectacle -b -n -o \"" + tempFile + "\"";
+        }
+        
+        if (QFile::exists("/usr/bin/scrot")) {
+            possibleCmds << "/usr/bin/scrot \"" + tempFile + "\"";
+        }
+        
+        if (QFile::exists("/usr/bin/maim")) {
+            possibleCmds << "/usr/bin/maim \"" + tempFile + "\"";
+        }
+        
+        if (QFile::exists("/usr/bin/import")) {
+            possibleCmds << "/usr/bin/import -window root \"" + tempFile + "\"";
+        }
+        
+        for (const QString &cmd : possibleCmds) {
+            if (captureSuccess) break;
+            
+            qDebug() << "尝试使用外部命令捕获屏幕:" << cmd;
+            
+            QProcess process;
+            process.setProcessChannelMode(QProcess::MergedChannels);
+            
+            try {
+                process.start("bash", QStringList() << "-c" << cmd);
+                
+                if (process.waitForFinished(5000)) {
+                    if (process.exitCode() == 0) {
+                        QFile file(tempFile);
+                        if (file.exists() && file.size() > 0) {
+                            QImage capturedImage(tempFile);
+                            if (!capturedImage.isNull()) {
+                                m_screenPixmap = QPixmap::fromImage(capturedImage);
+                                qDebug() << "使用外部工具" << cmd << "捕获屏幕成功";
+                                captureSuccess = true;
+                                QFile::remove(tempFile);
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (...) {
+                qDebug() << "执行外部命令时捕获到异常";
+            }
+        }
+    }
+    
+    // 最后，如果所有方法都失败，使用Qt原生方法 - 但在Wayland下可能有问题
+    if (!captureSuccess) {
+        qDebug() << "所有外部工具捕获失败，尝试使用Qt原生方法 (在Wayland下可能导致缩放问题)";
+        
+        QList<QScreen*> screens = QGuiApplication::screens();
+        
+        if (screens.isEmpty()) {
+            qDebug() << "错误：无法获取任何屏幕";
+            return;
+        }
+        
+        // 计算屏幕边界 - 找到所有屏幕几何区域的联合
+        QRect totalGeometry;
+        bool firstScreen = true;
+        
+        for (QScreen *screen : screens) {
+            QRect screenGeom = screen->geometry();
+            qreal scaleFactor = screen->devicePixelRatio();
+            
+            qDebug() << "屏幕:" << screen->name() 
+                     << "几何区域:" << screenGeom
+                     << "分辨率:" << screen->size()
+                     << "设备像素比:" << scaleFactor;
+            
+            // 在Wayland下处理缩放因子
+            if (isWayland) {
+                qDebug() << "Wayland环境应用缩放因子:" << scaleFactor;
+                screenGeom = QRect(
+                    screenGeom.x(), 
+                    screenGeom.y(),
+                    qRound(screenGeom.width() * scaleFactor),
+                    qRound(screenGeom.height() * scaleFactor)
+                );
+            }
+            
+            if (firstScreen) {
+                totalGeometry = screenGeom;
+                firstScreen = false;
+            } else {
+                totalGeometry = totalGeometry.united(screenGeom);
+            }
+        }
+        
+        qDebug() << "合并后的屏幕几何区域:" << totalGeometry;
+        
+        // 创建一个足够大的QPixmap来容纳所有屏幕
+        QPixmap combinedPixmap(totalGeometry.size());
+        combinedPixmap.fill(Qt::transparent);
+        
+        QPainter painter(&combinedPixmap);
+        
+        // 捕获每个屏幕并绘制到正确位置
+        for (QScreen *screen : screens) {
+            QRect screenGeom = screen->geometry();
+            qreal scaleFactor = screen->devicePixelRatio();
+            
+            // 计算此屏幕相对于合并区域的偏移
+            int offsetX = screenGeom.left() - totalGeometry.left();
+            int offsetY = screenGeom.top() - totalGeometry.top();
+            
+            if (isWayland) {
+                // 在Wayland下调整偏移量以考虑缩放
+                offsetX = qRound(offsetX * scaleFactor);
+                offsetY = qRound(offsetY * scaleFactor);
+            }
+            
+            QPoint offset(offsetX, offsetY);
+            qDebug() << "尝试捕获屏幕:" << screen->name() 
+                     << "偏移:" << offset;
+            
+            // 捕获此屏幕
+            QPixmap screenPixmap;
+            
+            // 使用grabWindow()还是grabWindow(0)，取决于平台
+            try {
+                // 使用参数0表示捕获整个屏幕
+                screenPixmap = screen->grabWindow(0);
+                
+                if (!screenPixmap.isNull()) {
+                    qDebug() << "屏幕" << screen->name() << "捕获成功，大小:" << screenPixmap.size();
+                    
+                    // 在Wayland下处理缩放问题
+                    if (isWayland && qAbs(scaleFactor - 1.0) > 0.01) {
+                        // 在Qt中处理Wayland缩放问题的方法
+                        qDebug() << "Wayland环境下，处理截图缩放，原始尺寸:" << screenPixmap.size();
+                        QImage img = screenPixmap.toImage();
+                        
+                        // 将图像缩放到正确的物理尺寸
+                        int targetWidth = qRound(img.width() * scaleFactor);
+                        int targetHeight = qRound(img.height() * scaleFactor);
+                        qDebug() << "调整为物理尺寸:" << QSize(targetWidth, targetHeight);
+                        
+                        QImage scaledImage = img.scaled(targetWidth, targetHeight, 
+                                                       Qt::IgnoreAspectRatio, 
+                                                       Qt::SmoothTransformation);
+                        screenPixmap = QPixmap::fromImage(scaledImage);
+                    }
+                    
+                    // 绘制到合并的图像中
+                    painter.drawPixmap(offset, screenPixmap);
+                    captureSuccess = true;
+                } else {
+                    qDebug() << "屏幕" << screen->name() << "捕获失败";
+                }
+            } catch (...) {
+                qDebug() << "捕获屏幕时发生异常";
+            }
+        }
+        
+        painter.end();
+        
+        if (captureSuccess) {
+            m_screenPixmap = combinedPixmap;
+            qDebug() << "合并所有屏幕成功，总大小:" << m_screenPixmap.size();
+        }
+    }
+    
+    // 最后的尝试 - 如果所有方法都失败
+    if (m_screenPixmap.isNull()) {
+        QMessageBox::critical(nullptr, "截图失败", 
+                             "无法捕获屏幕。\n\n"
+                             "您使用的是Wayland显示服务器，请确保安装了以下工具之一:\n"
+                             "- grim (推荐)\n"
+                             "- spectacle\n"
+                             "- gnome-screenshot\n\n"
+                             "安装命令: sudo pacman -S grim");
+    }
+}
+
 void ScreenshotWindow::showAboutDialog()
 {
     QMessageBox::about(nullptr, "关于截图工具", 
-                       "截图工具 v1.0\n\n"
-                       "这是一个简单的截图工具，可以捕获屏幕并进行编辑。\n\n"
-                       "使用方法：\n"
-                       "- 点击托盘图标开始截图\n"
-                       "- 拖动鼠标选择区域\n"
-                       "- 使用工具栏添加标注\n"
-                       "- 保存或复制到剪贴板\n\n"
-                       "快捷键：\n"
-                       "- Esc: 取消截图\n"
-                       "- Enter: 完成截图\n"
-                       "- Ctrl+Z: 撤销\n"
-                       "- Ctrl+S: 保存");
-}
-
-void ScreenshotWindow::quitApplication()
-{
-    QApplication::quit();
-}
-
-void ScreenshotWindow::closeEvent(QCloseEvent *event)
-{
-    if (m_isScreenshotMode) {
-        m_isScreenshotMode = false;
-        hide();
-        event->ignore();
-    } else {
-        event->accept();
-    }
-}
-
-void ScreenshotWindow::paintEvent(QPaintEvent *event)
-{
-    QPainter painter(this);
-    
-    painter.drawPixmap(0, 0, m_screenPixmap);
-    
-    if (m_hasSelected) {
-        QRect selectedArea = selectedRect();
-        
-        QColor maskColor(0, 0, 0, 120);
-        painter.setBrush(maskColor);
-        painter.setPen(Qt::NoPen);
-        
-        QPainterPath path;
-        path.addRect(rect());
-        path.addRect(selectedArea);
-        painter.drawPath(path);
-        
-        painter.setPen(QPen(Qt::red, 2));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRect(selectedArea);
-        
-        drawOnPainter(painter);
-        
-        QString sizeText = QString("%1 x %2").arg(selectedArea.width()).arg(selectedArea.height());
-        QFont font = painter.font();
-        font.setBold(true);
-        painter.setFont(font);
-        painter.setPen(Qt::white);
-        painter.drawText(selectedArea.topLeft() + QPoint(5, -5), sizeText);
-    } else if (m_isSelecting) {
-        QRect selectedArea = selectedRect();
-        
-        QColor maskColor(0, 0, 0, 120);
-        painter.setBrush(maskColor);
-        painter.setPen(Qt::NoPen);
-        
-        QPainterPath path;
-        path.addRect(rect());
-        path.addRect(selectedArea);
-        painter.drawPath(path);
-        
-        painter.setPen(QPen(Qt::red, 2));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRect(selectedArea);
-        
-        QString sizeText = QString("%1 x %2").arg(selectedArea.width()).arg(selectedArea.height());
-        QFont font = painter.font();
-        font.setBold(true);
-        painter.setFont(font);
-        painter.setPen(Qt::white);
-        painter.drawText(selectedArea.topLeft() + QPoint(5, -5), sizeText);
-    } else {
-        QColor maskColor(0, 0, 0, 120);
-        painter.fillRect(rect(), maskColor);
-        
-        QString helpText = "按下鼠标左键并拖动来选择截图区域\n按ESC取消截图";
-        QFont font = painter.font();
-        font.setBold(true);
-        font.setPointSize(12);
-        painter.setFont(font);
-        painter.setPen(Qt::white);
-        
-        QFontMetrics metrics(font);
-        QRect textRect = metrics.boundingRect(rect(), Qt::AlignCenter, helpText);
-        painter.drawText(textRect, helpText);
-    }
-}
-
-void ScreenshotWindow::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        if (!m_hasSelected) {
-            m_isSelecting = true;
-            m_startPoint = event->pos();
-            m_endPoint = m_startPoint;
-            m_rubberBand->setGeometry(QRect(m_startPoint, QSize()));
-            m_rubberBand->show();
-        } else {
-            if (m_currentMode != DrawMode::None) {
-                m_startPoint = event->pos();
-                m_endPoint = m_startPoint;
-                
-                if (!selectedRect().contains(m_startPoint)) {
-                    return;
-                }
-                
-                if (m_currentMode == DrawMode::Text) {
-                    bool ok;
-                    QString text = QInputDialog::getText(this, "输入文字", 
-                                                         "请输入要添加的文字：", 
-                                                         QLineEdit::Normal, 
-                                                         "", &ok);
-                    if (ok && !text.isEmpty()) {
-                        DrawItem item;
-                        item.mode = DrawMode::Text;
-                        item.start = m_startPoint;
-                        item.text = text;
-                        item.color = Qt::red;
-                        m_drawItems.append(item);
-                        update();
-                    }
-                } else if (m_currentMode == DrawMode::Brush) {
-                    m_currentBrushPoints.clear();
-                    m_currentBrushPoints.append(event->pos());
-                    update();
-                }
-            }
-        }
-    }
-}
-
-void ScreenshotWindow::mouseMoveEvent(QMouseEvent *event)
-{
-    if (m_isSelecting) {
-        m_endPoint = event->pos();
-        m_rubberBand->setGeometry(selectedRect());
-        update();
-    } else if (m_hasSelected && m_currentMode != DrawMode::None && m_currentMode != DrawMode::Text) {
-        if (event->buttons() & Qt::LeftButton) {
-            m_endPoint = event->pos();
-            
-            if (m_currentMode == DrawMode::Brush && selectedRect().contains(event->pos())) {
-                m_currentBrushPoints.append(event->pos());
-            }
-            
-            update();
-        }
-    }
-}
-
-void ScreenshotWindow::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        if (m_isSelecting) {
-            m_isSelecting = false;
-            m_hasSelected = true;
-            m_endPoint = event->pos();
-            
-            QRect selectedArea = selectedRect();
-            m_toolBar->move(selectedArea.right() - m_toolBar->width(), 
-                            selectedArea.bottom() + 5);
-            m_toolBar->setVisible(true);
-            
-            update();
-        } else if (m_hasSelected && m_currentMode != DrawMode::None && m_currentMode != DrawMode::Text) {
-            m_endPoint = event->pos();
-            
-            if (selectedRect().contains(m_startPoint)) {
-                DrawItem item;
-                item.mode = m_currentMode;
-                item.start = m_startPoint;
-                item.end = m_endPoint;
-                item.rect = QRect(m_startPoint, m_endPoint).normalized();
-                item.color = Qt::red;
-                
-                if (m_currentMode == DrawMode::Brush && !m_currentBrushPoints.isEmpty()) {
-                    item.brushPoints = m_currentBrushPoints;
-                    m_currentBrushPoints.clear();
-                }
-                
-                m_drawItems.append(item);
-            }
-            
-            update();
-        }
-    }
-}
-
-void ScreenshotWindow::keyPressEvent(QKeyEvent *event)
-{
-    if (event->key() == Qt::Key_Escape) {
-        cancelScreenshot();
-    } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-        if (m_hasSelected) {
-            finishScreenshot();
-        }
-    } else if (event->key() == Qt::Key_Z && event->modifiers() == Qt::ControlModifier) {
-        undo();
-    } else if (event->key() == Qt::Key_S && event->modifiers() == Qt::ControlModifier) {
-        if (m_hasSelected) {
-            saveScreenshot();
-        }
-    }
+                      "截图工具 v1.0\n"
+                      "用于在Linux系统上进行屏幕截图的工具\n"
+                      "支持Wayland和X11环境\n"
+                      "\n"
+                      "© 2025 截图工具团队");
 }
 
 void ScreenshotWindow::saveScreenshot()
 {
-    if (!m_hasSelected) {
-        return;
-    }
-    
-    QRect selectedArea = selectedRect();
-    
-    QPixmap screenshot = m_screenPixmap.copy(selectedArea);
-    
-    QPainter painter(&screenshot);
-    
-    painter.translate(-selectedArea.topLeft());
-    
-    for (const DrawItem &item : m_drawItems) {
-        if (selectedArea.contains(item.start)) {
-            painter.setPen(QPen(item.color, 2));
+    if (m_hasSelected && !m_screenPixmap.isNull()) {
+        // 获取保存文件路径
+        QString filePath = QFileDialog::getSaveFileName(
+            this,
+            "保存截图",
+            QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + 
+                "/screenshot_" + QDateTime::currentDateTime().toString("yyyy-MM-dd_hh-mm-ss") + ".png",
+            "图像文件 (*.png *.jpg *.bmp)");
+        
+        if (!filePath.isEmpty()) {
+            // 获取选择的区域
+            QRect rect = selectedRect();
+            QPixmap selectedPixmap = m_screenPixmap.copy(rect);
             
-            switch (item.mode) {
-            case DrawMode::Rectangle:
-                painter.setBrush(Qt::NoBrush);
-                painter.drawRect(QRect(item.start, item.end).normalized());
-                break;
-            case DrawMode::Circle:
-                painter.setBrush(Qt::NoBrush);
-                painter.drawEllipse(QRect(item.start, item.end).normalized());
-                break;
-            case DrawMode::Arrow: {
-                QLineF line(item.start, item.end);
-                painter.drawLine(line);
+            // 将绘制的项目应用到截图上
+            if (!m_drawItems.isEmpty()) {
+                QPainter painter(&selectedPixmap);
+                painter.setRenderHint(QPainter::Antialiasing);
                 
-                double angle = std::atan2(-line.dy(), line.dx());
-                QPointF arrowP1 = item.end + QPointF(qCos(angle + M_PI * 3/4) * 10,
-                                                      qSin(angle + M_PI * 3/4) * 10);
-                QPointF arrowP2 = item.end + QPointF(qCos(angle + M_PI * 5/4) * 10,
-                                                      qSin(angle + M_PI * 5/4) * 10);
-                QPolygonF arrowHead;
-                arrowHead << item.end << arrowP1 << arrowP2;
-                painter.setBrush(item.color);
-                painter.drawPolygon(arrowHead);
-                break;
+                // 相对于选择区域调整绘制位置
+                painter.translate(-rect.topLeft());
+                
+                drawOnPainter(painter);
+                painter.end();
             }
-            case DrawMode::Text:
-                painter.setFont(QFont("Arial", 12, QFont::Bold));
-                painter.drawText(item.start, item.text);
-                break;
-            case DrawMode::Brush:
-                if (!item.brushPoints.isEmpty()) {
-                    painter.setPen(QPen(item.color, 3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                    
-                    if (item.brushPoints.size() == 1) {
-                        painter.drawPoint(item.brushPoints.first());
-                    } else {
-                        for (int i = 1; i < item.brushPoints.size(); ++i) {
-                            painter.drawLine(item.brushPoints[i-1], item.brushPoints[i]);
-                        }
-                    }
-                }
-                break;
-            default:
-                break;
+            
+            // 保存图像
+            if (selectedPixmap.save(filePath)) {
+                QMessageBox::information(this, "保存成功", "截图已保存到:\n" + filePath);
+            } else {
+                QMessageBox::critical(this, "保存失败", "无法保存截图到:\n" + filePath);
             }
         }
     }
     
-    QString defaultFilePath = QDir::homePath() + "/Pictures/screenshot_" + 
-                              QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss") + 
-                              ".png";
-    
-    QString filePath = QFileDialog::getSaveFileName(this, "保存截图", 
-                                                    defaultFilePath, 
-                                                    "PNG图像 (*.png);;JPEG图像 (*.jpg)");
-    
-    if (!filePath.isEmpty()) {
-        if (screenshot.save(filePath)) {
-            QMessageBox::information(this, "保存成功", "截图已保存到: " + filePath);
-            close();
-        } else {
-            QMessageBox::warning(this, "保存失败", "保存截图时出错");
-        }
-    }
+    // 关闭截图窗口
+    cancelScreenshot();
 }
 
 void ScreenshotWindow::cancelScreenshot()
 {
     m_isScreenshotMode = false;
+    m_isSelecting = false;
+    m_hasSelected = false;
+    m_currentMode = DrawMode::None;
+    m_drawItems.clear();
+    m_undoItems.clear();
+    m_rubberBand->hide();
+    m_toolBar->hide();
     hide();
+    
+    // 在Wayland环境下，确保托盘图标重新显示
+    if (QGuiApplication::platformName().contains("wayland", Qt::CaseInsensitive)) {
+        QTimer::singleShot(100, [this]() {
+            if (m_trayIcon) {
+                m_trayIcon->show();
+            }
+        });
+    } else {
+        if (m_trayIcon) {
+            m_trayIcon->show();
+        }
+    }
 }
 
 void ScreenshotWindow::finishScreenshot()
 {
-    if (m_hasSelected) {
-        QRect selectedArea = selectedRect();
-        qDebug() << "截图区域:" << selectedArea;
+    if (m_hasSelected && !m_screenPixmap.isNull()) {
+        // 获取选择的区域
+        QRect rect = selectedRect();
+        QPixmap selectedPixmap = m_screenPixmap.copy(rect);
         
-        if (selectedArea.width() <= 0 || selectedArea.height() <= 0) {
-            QMessageBox::warning(this, "无效截图", "选择的区域无效，请重新选择");
-            m_isScreenshotMode = false;
-            hide();
-            return;
-        }
-        
-        // 检查截图区域是否在屏幕内
-        QScreen *screen = QGuiApplication::primaryScreen();
-        QRect screenGeometry = screen->geometry();
-        qDebug() << "屏幕几何尺寸:" << screenGeometry;
-        
-        if (!screenGeometry.contains(selectedArea)) {
-            qDebug() << "警告：截图区域部分在屏幕外，调整区域到屏幕内";
-            selectedArea = selectedArea.intersected(screenGeometry);
-            qDebug() << "调整后的截图区域:" << selectedArea;
-        }
-        
-        // 检查原始截图是否有效
-        if (m_screenPixmap.isNull()) {
-            qDebug() << "错误：原始截图为空";
-            QMessageBox::critical(this, "截图失败", "截图初始化失败，原始屏幕图像为空");
-            m_isScreenshotMode = false;
-            hide();
-            return;
-        }
-        
-        qDebug() << "原始截图尺寸:" << m_screenPixmap.size() << "深度:" << m_screenPixmap.depth();
-        
-        // 创建截图 - 使用安全的创建方式
-        QPixmap screenshot;
-        
-        // 安全的截图创建尝试
-        try {
-            if (selectedArea.right() > m_screenPixmap.width() || 
-                selectedArea.bottom() > m_screenPixmap.height()) {
-                qDebug() << "修正：选择区域超出原始图像大小";
-                selectedArea = selectedArea.intersected(QRect(0, 0, m_screenPixmap.width(), m_screenPixmap.height()));
-                qDebug() << "修正后的区域:" << selectedArea;
-            }
+        // 将绘制的项目应用到截图上
+        if (!m_drawItems.isEmpty()) {
+            QPainter painter(&selectedPixmap);
+            painter.setRenderHint(QPainter::Antialiasing);
             
-            // 创建截图前再次检查参数合法性
-            if (selectedArea.width() <= 0 || selectedArea.height() <= 0 || 
-                selectedArea.right() > m_screenPixmap.width() || 
-                selectedArea.bottom() > m_screenPixmap.height()) {
-                qDebug() << "错误：截图区域参数无效";
-                QMessageBox::critical(this, "截图失败", "无法创建截图：区域参数无效");
-                m_isScreenshotMode = false;
-                hide();
-                return;
-            }
+            // 相对于选择区域调整绘制位置
+            painter.translate(-rect.topLeft());
             
-            qDebug() << "尝试创建截图，区域:" << selectedArea;
-            screenshot = m_screenPixmap.copy(selectedArea);
-            
-            if (screenshot.isNull()) {
-                qDebug() << "错误：创建的截图为空";
-                QMessageBox::critical(this, "截图失败", "无法创建截图：操作失败");
-                m_isScreenshotMode = false;
-                hide();
-                return;
-            }
-            
-            qDebug() << "截图创建成功，尺寸:" << screenshot.size();
-        } catch (const std::exception& e) {
-            qDebug() << "创建截图时捕获到异常:" << e.what();
-            QMessageBox::critical(this, "截图失败", QString("创建截图时发生错误: %1").arg(e.what()));
-            m_isScreenshotMode = false;
-            hide();
-            return;
-        } catch (...) {
-            qDebug() << "创建截图时捕获到未知异常";
-            QMessageBox::critical(this, "截图失败", "创建截图时发生未知错误");
-            m_isScreenshotMode = false;
-            hide();
-            return;
-        }
-        
-        // 尝试直接使用截图
-        QImage testImage = screenshot.toImage();
-        if (testImage.isNull()) {
-            qDebug() << "错误：截图转换为QImage失败";
-            QMessageBox::critical(this, "截图失败", "截图处理失败");
-            m_isScreenshotMode = false;
-            hide();
-            return;
-        }
-        
-        // 在截图上绘制用户添加的图形
-        QPainter painter;
-        bool painterStarted = painter.begin(&screenshot);
-        
-        if (!painterStarted) {
-            qDebug() << "警告：无法在截图上开始绘制，跳过绘制操作";
-            // 继续使用原始截图，不尝试绘制
-        } else {
-            painter.translate(-selectedArea.topLeft());
-            
-            // 绘制用户添加的图形
-            for (const DrawItem &item : m_drawItems) {
-                painter.setPen(QPen(item.color, 2));
-                
-                switch (item.mode) {
-                case DrawMode::Rectangle:
-                    painter.setBrush(Qt::NoBrush);
-                    painter.drawRect(QRect(item.start, item.end).normalized());
-                    break;
-                case DrawMode::Circle:
-                    painter.setBrush(Qt::NoBrush);
-                    painter.drawEllipse(QRect(item.start, item.end).normalized());
-                    break;
-                case DrawMode::Arrow: {
-                    QLineF line(item.start, item.end);
-                    painter.drawLine(line);
-                    
-                    double angle = std::atan2(-line.dy(), line.dx());
-                    QPointF arrowP1 = item.end + QPointF(qCos(angle + M_PI * 3/4) * 10,
-                                                          qSin(angle + M_PI * 3/4) * 10);
-                    QPointF arrowP2 = item.end + QPointF(qCos(angle + M_PI * 5/4) * 10,
-                                                          qSin(angle + M_PI * 5/4) * 10);
-                    QPolygonF arrowHead;
-                    arrowHead << item.end << arrowP1 << arrowP2;
-                    painter.setBrush(item.color);
-                    painter.drawPolygon(arrowHead);
-                    break;
-                }
-                case DrawMode::Text:
-                    painter.setFont(QFont("Arial", 12, QFont::Bold));
-                    painter.drawText(item.start, item.text);
-                    break;
-                case DrawMode::Brush:
-                    if (!item.brushPoints.isEmpty()) {
-                        painter.setPen(QPen(item.color, 3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                        
-                        if (item.brushPoints.size() == 1) {
-                            painter.drawPoint(item.brushPoints.first());
-                        } else {
-                            for (int i = 1; i < item.brushPoints.size(); ++i) {
-                                painter.drawLine(item.brushPoints[i-1], item.brushPoints[i]);
-                            }
-                        }
-                    }
-                    break;
-                default:
-                    break;
-                }
-            }
-            
+            drawOnPainter(painter);
             painter.end();
         }
         
-        // 保存截图
-        // 创建一个基本路径
-        QString picturesPath = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+        // 复制到剪贴板
+        QClipboard *clipboard = QGuiApplication::clipboard();
+        clipboard->setPixmap(selectedPixmap);
         
-        // 检查路径存在性
-        if (picturesPath.isEmpty() || !QDir(picturesPath).exists()) {
-            qDebug() << "Pictures路径不存在，尝试桌面路径";
-            picturesPath = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
-        }
-        
-        // 检查中文桌面路径
-        if (picturesPath.isEmpty() || !QDir(picturesPath).exists()) {
-            QString homePath = QDir::homePath();
-            QStringList possiblePaths = {
-                homePath + "/桌面",
-                homePath + "/Desktop"
-            };
-            
-            for (const QString &path : possiblePaths) {
-                if (QDir(path).exists()) {
-                    qDebug() << "找到有效桌面路径:" << path;
-                    picturesPath = path;
-                    break;
-                }
-            }
-        }
-        
-        // 最后的保障 - 使用用户主目录
-        if (picturesPath.isEmpty() || !QDir(picturesPath).exists()) {
-            qDebug() << "使用用户主目录作为最后的保障";
-            picturesPath = QDir::homePath();
-        }
-        
-        qDebug() << "将使用保存路径基础目录:" << picturesPath;
-        
-        // 检查目录权限
-        QFileInfo dirInfo(picturesPath);
-        if (!dirInfo.isWritable()) {
-            qDebug() << "警告：选择的目录不可写，将尝试程序目录";
-            picturesPath = qApp->applicationDirPath();
-            qDebug() << "改用程序目录:" << picturesPath;
-        }
-        
-        // 创建唯一文件名
-        QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd-hhmmss");
-        QString filename = QString("截图_%1.png").arg(timestamp);
-        QString savePath = picturesPath + "/" + filename;
-        
-        qDebug() << "最终保存路径:" << savePath;
-        
-        // 安全保存截图
-        bool saveSuccess = false;
-        
-        try {
-            // 先进行内存图像测试
-            QByteArray byteArray;
-            QBuffer buffer(&byteArray);
-            buffer.open(QIODevice::WriteOnly);
-            
-            if (screenshot.save(&buffer, "PNG")) {
-                qDebug() << "内存中PNG创建成功，大小:" << byteArray.size() << "字节";
-                buffer.close();
-                
-                // 尝试实际文件保存
-                QFile file(savePath);
-                if (file.open(QIODevice::WriteOnly)) {
-                    file.write(byteArray);
-                    file.close();
-                    saveSuccess = true;
-                    qDebug() << "文件保存成功";
-                } else {
-                    qDebug() << "文件打开失败:" << file.errorString();
-                }
-            } else {
-                qDebug() << "内存中PNG创建失败";
-            }
-        } catch (const std::exception& e) {
-            qDebug() << "保存截图时捕获到异常:" << e.what();
-        } catch (...) {
-            qDebug() << "保存截图时捕获到未知异常";
-        }
-        
-        // 如果第一次保存失败，尝试直接保存到用户主目录
-        if (!saveSuccess) {
-            qDebug() << "第一次保存失败，尝试直接保存到用户主目录";
-            savePath = QDir::homePath() + "/" + filename;
-            try {
-                saveSuccess = screenshot.save(savePath, "PNG");
-                qDebug() << "用户主目录保存" << (saveSuccess ? "成功" : "失败");
-            } catch (...) {
-                qDebug() << "保存到用户主目录时发生异常";
-            }
-        }
-        
-        // 最后尝试程序目录
-        if (!saveSuccess) {
-            qDebug() << "尝试保存到程序目录";
-            savePath = qApp->applicationDirPath() + "/" + filename;
-            try {
-                saveSuccess = screenshot.save(savePath, "PNG");
-                qDebug() << "程序目录保存" << (saveSuccess ? "成功" : "失败");
-            } catch (...) {
-                qDebug() << "保存到程序目录时发生异常";
-            }
-        }
-        
-        // 如果所有尝试都失败，尝试一个非常基本的方法
-        if (!saveSuccess) {
-            qDebug() << "尝试最基本的保存方法 - 直接保存到/tmp";
-            savePath = "/tmp/" + filename;
-            try {
-                // 使用QImage作为中间步骤
-                QImage image = screenshot.toImage();
-                if (!image.isNull()) {
-                    saveSuccess = image.save(savePath, "PNG");
-                    qDebug() << "通过QImage保存到/tmp " << (saveSuccess ? "成功" : "失败");
-                }
-            } catch (...) {
-                qDebug() << "基本保存方法也失败";
-            }
-        }
-        
-        if (saveSuccess) {
-            // 剪贴板处理
-            bool clipboardSuccess = false;
-            
-            try {
-                QClipboard *clipboard = QApplication::clipboard();
-                if (clipboard) {
-                    QImage image = screenshot.toImage();
-                    clipboard->setImage(image);
-                    QApplication::processEvents();
-                    clipboardSuccess = true;
-                    qDebug() << "QClipboard设置图像成功";
-                }
-            } catch (...) {
-                qDebug() << "设置剪贴板时发生异常";
-            }
-            
-            // 在Wayland环境使用wl-copy
-            if (QGuiApplication::platformName().contains("wayland", Qt::CaseInsensitive) && 
-                QFile::exists("/usr/bin/wl-copy")) {
-                
-                try {
-                    QProcess process;
-                    process.setProcessChannelMode(QProcess::MergedChannels);
-                    
-                    QString cmd = QString("/usr/bin/wl-copy -t image/png < \"%1\"").arg(savePath);
-                    qDebug() << "执行wl-copy命令:" << cmd;
-                    
-                    process.start("bash", QStringList() << "-c" << cmd);
-                    if (process.waitForFinished(3000)) {
-                        if (process.exitCode() == 0) {
-                            clipboardSuccess = true;
-                            qDebug() << "wl-copy命令成功";
-                        } else {
-                            qDebug() << "wl-copy命令失败:" << process.readAll();
-                        }
-                    }
-                } catch (...) {
-                    qDebug() << "执行wl-copy命令时发生异常";
-                }
-            }
-            
-            // 显示成功消息
-            QString message = "截图已保存到:\n" + savePath;
-            if (clipboardSuccess) {
-                message += "\n\n且已复制到剪贴板，可使用Ctrl+V粘贴";
-            } else {
-                message += "\n\n但复制到剪贴板可能失败，您可以手动复制此文件";
-            }
-            
-            QMessageBox::information(this, "截图完成", message);
-            
-            // 尝试打开文件所在目录
-            try {
-                QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(savePath).absolutePath()));
-            } catch (...) {
-                qDebug() << "打开文件目录时发生异常";
-            }
-        } else {
-            QMessageBox::critical(this, "截图失败", 
-                              "无法保存截图文件。\n请确保您有足够的权限和磁盘空间。");
-        }
+        // 显示成功消息
+        QMessageBox::information(this, "截图完成", "截图已复制到剪贴板");
     }
     
-    // 隐藏窗口
-    m_isScreenshotMode = false;
-    hide();
+    // 关闭截图窗口
+    cancelScreenshot();
 }
 
 void ScreenshotWindow::drawRectangle()
 {
-    m_currentMode = DrawMode::Rectangle;
+    // 保护选区状态，防止触发重新选择
+    if (m_hasSelected) {
+        m_currentMode = DrawMode::Rectangle;
+        qDebug() << "切换到矩形绘制模式，保持已选区状态";
+    }
 }
 
 void ScreenshotWindow::drawCircle()
 {
-    m_currentMode = DrawMode::Circle;
+    // 保护选区状态，防止触发重新选择
+    if (m_hasSelected) {
+        m_currentMode = DrawMode::Circle;
+        qDebug() << "切换到圆形绘制模式，保持已选区状态";
+    }
 }
 
 void ScreenshotWindow::drawArrow()
 {
-    m_currentMode = DrawMode::Arrow;
+    // 保护选区状态，防止触发重新选择
+    if (m_hasSelected) {
+        m_currentMode = DrawMode::Arrow;
+        qDebug() << "切换到箭头绘制模式，保持已选区状态";
+    }
 }
 
 void ScreenshotWindow::drawText()
 {
-    m_currentMode = DrawMode::Text;
+    if (!m_hasSelected) return;
+    
+    bool ok;
+    QString text = QInputDialog::getText(this, "输入文字", "请输入要添加的文字:", 
+                                        QLineEdit::Normal, "", &ok);
+    
+    if (ok && !text.isEmpty()) {
+        DrawItem item;
+        item.mode = DrawMode::Text;
+        item.rect = QRect(m_startPoint, m_startPoint);
+        item.text = text;
+        item.color = Qt::red; // 默认颜色
+        m_drawItems.append(item);
+        update();
+    }
 }
 
 void ScreenshotWindow::drawBrush()
 {
-    m_currentMode = DrawMode::Brush;
-    m_currentBrushPoints.clear();
+    // 保护选区状态，防止触发重新选择
+    if (m_hasSelected) {
+        m_currentMode = DrawMode::Brush;
+        qDebug() << "切换到画笔绘制模式，保持已选区状态";
+    }
 }
 
 void ScreenshotWindow::undo()
@@ -1079,68 +754,418 @@ void ScreenshotWindow::undo()
 void ScreenshotWindow::drawOnPainter(QPainter &painter)
 {
     for (const DrawItem &item : m_drawItems) {
-        painter.setPen(QPen(item.color, 2));
-        
         switch (item.mode) {
-        case DrawMode::Rectangle:
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRect(QRect(item.start, item.end).normalized());
-            break;
-        case DrawMode::Circle:
-            painter.setBrush(Qt::NoBrush);
-            painter.drawEllipse(QRect(item.start, item.end).normalized());
-            break;
-        case DrawMode::Arrow: {
-            QLineF line(item.start, item.end);
-            painter.drawLine(line);
-            
-            double angle = std::atan2(-line.dy(), line.dx());
-            QPointF arrowP1 = item.end + QPointF(qCos(angle + M_PI * 3/4) * 10,
-                                                  qSin(angle + M_PI * 3/4) * 10);
-            QPointF arrowP2 = item.end + QPointF(qCos(angle + M_PI * 5/4) * 10,
-                                                  qSin(angle + M_PI * 5/4) * 10);
-            QPolygonF arrowHead;
-            arrowHead << item.end << arrowP1 << arrowP2;
-            painter.setBrush(item.color);
-            painter.drawPolygon(arrowHead);
-            break;
-        }
-        case DrawMode::Text:
-            painter.setFont(QFont("Arial", 12, QFont::Bold));
-            painter.drawText(item.start, item.text);
-            break;
-        case DrawMode::Brush:
-            if (!item.brushPoints.isEmpty()) {
-                painter.setPen(QPen(item.color, 3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            case DrawMode::Rectangle: {
+                painter.setPen(QPen(Qt::red, 2));
+                painter.drawRect(item.rect);
+                break;
+            }
+            case DrawMode::Circle: {
+                painter.setPen(QPen(Qt::red, 2));
+                painter.drawEllipse(item.rect);
+                break;
+            }
+            case DrawMode::Arrow: {
+                // 绘制箭头
+                painter.setPen(QPen(Qt::red, 2));
+                painter.drawLine(item.start, item.end);
                 
-                if (item.brushPoints.size() == 1) {
-                    painter.drawPoint(item.brushPoints.first());
-                } else {
+                // 计算箭头角度
+                QLineF line(item.end, item.start);
+                double angle = std::atan2(-line.dy(), line.dx());
+                
+                // 绘制箭头头部
+                QPointF arrowP1 = item.end + QPointF(sin(angle + M_PI / 3) * 10,
+                                              cos(angle + M_PI / 3) * 10);
+                QPointF arrowP2 = item.end + QPointF(sin(angle + M_PI - M_PI / 3) * 10,
+                                              cos(angle + M_PI - M_PI / 3) * 10);
+                
+                QPolygonF arrowHead;
+                arrowHead << item.end << arrowP1 << arrowP2;
+                painter.setBrush(Qt::red);
+                painter.drawPolygon(arrowHead);
+                break;
+            }
+            case DrawMode::Text: {
+                painter.setPen(QPen(Qt::red, 2));
+                QFont font = painter.font();
+                font.setPointSize(12);
+                painter.setFont(font);
+                painter.drawText(item.rect.topLeft(), item.text);
+                break;
+            }
+            case DrawMode::Brush: {
+                painter.setPen(QPen(Qt::red, 3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                if (item.brushPoints.size() > 1) {
                     for (int i = 1; i < item.brushPoints.size(); ++i) {
                         painter.drawLine(item.brushPoints[i-1], item.brushPoints[i]);
                     }
                 }
+                break;
             }
-            break;
-        default:
-            break;
-        }
-    }
-    
-    if (m_currentMode == DrawMode::Brush && !m_currentBrushPoints.isEmpty()) {
-        painter.setPen(QPen(Qt::red, 3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        
-        if (m_currentBrushPoints.size() == 1) {
-            painter.drawPoint(m_currentBrushPoints.first());
-        } else {
-            for (int i = 1; i < m_currentBrushPoints.size(); ++i) {
-                painter.drawLine(m_currentBrushPoints[i-1], m_currentBrushPoints[i]);
+            case DrawMode::Mosaic: {
+                // 马赛克效果实现
+                int blockSize = 10; // 马赛克块大小
+                QRect rect = item.rect.normalized();
+                
+                for (int y = rect.top(); y < rect.bottom(); y += blockSize) {
+                    for (int x = rect.left(); x < rect.right(); x += blockSize) {
+                        int w = qMin(blockSize, rect.right() - x);
+                        int h = qMin(blockSize, rect.bottom() - y);
+                        QRect block(x, y, w, h);
+                        
+                        // 获取块的平均颜色
+                        QRect globalBlock = block.translated(0, 0); // 转换为全局坐标
+                        if (globalBlock.left() >= 0 && globalBlock.top() >= 0 &&
+                            globalBlock.right() < m_screenPixmap.width() &&
+                            globalBlock.bottom() < m_screenPixmap.height()) {
+                            
+                            QImage blockImage = m_screenPixmap.copy(globalBlock).toImage();
+                            int r = 0, g = 0, b = 0, pixels = 0;
+                            
+                            for (int by = 0; by < blockImage.height(); ++by) {
+                                for (int bx = 0; bx < blockImage.width(); ++bx) {
+                                    QColor pixelColor = blockImage.pixelColor(bx, by);
+                                    r += pixelColor.red();
+                                    g += pixelColor.green();
+                                    b += pixelColor.blue();
+                                    pixels++;
+                                }
+                            }
+                            
+                            if (pixels > 0) {
+                                QColor avgColor(r / pixels, g / pixels, b / pixels);
+                                painter.fillRect(block, avgColor);
+                            }
+                        }
+                    }
+                }
+                break;
             }
+            case DrawMode::None:
+                break;
         }
     }
 }
 
 QRect ScreenshotWindow::selectedRect() const
 {
-    return QRect(m_startPoint, m_endPoint).normalized();
+    QRect rect(m_startPoint, m_endPoint);
+    return rect.normalized();
+}
+
+void ScreenshotWindow::paintEvent(QPaintEvent *event)
+{
+    Q_UNUSED(event);
+    
+    if (!m_isScreenshotMode || m_screenPixmap.isNull()) {
+        return;
+    }
+    
+    QPainter painter(this);
+    
+    // 绘制截图
+    painter.drawPixmap(0, 0, m_screenPixmap);
+    
+    // 添加半透明遮罩，突出选择区域
+    if (m_hasSelected) {
+        QRect selectedRect = this->selectedRect();
+        
+        // 创建整个屏幕的遮罩层
+        QRegion maskRegion(0, 0, width(), height());
+        // 从遮罩层中排除已选区域
+        QRegion selectedRegion(selectedRect);
+        // 最终的遮罩区域是整个屏幕减去选中区域
+        m_maskRegion = maskRegion.subtracted(selectedRegion);
+        
+        // 添加半透明遮罩效果
+        painter.setClipRegion(m_maskRegion);
+        painter.fillRect(0, 0, width(), height(), QColor(0, 0, 0, 128));
+        
+        // 清除裁剪区域以便后续绘制
+        painter.setClipRegion(QRegion(0, 0, width(), height()));
+        
+        // 绘制四个角上的小方块，表示选择区域
+        int handleSize = 6;
+        QPen pen(Qt::white, 2);
+        painter.setPen(pen);
+        
+        // 左上角
+        QRect topLeft(selectedRect.left() - handleSize / 2, 
+                     selectedRect.top() - handleSize / 2, 
+                     handleSize, handleSize);
+        // 右上角
+        QRect topRight(selectedRect.right() - handleSize / 2, 
+                      selectedRect.top() - handleSize / 2, 
+                      handleSize, handleSize);
+        // 左下角
+        QRect bottomLeft(selectedRect.left() - handleSize / 2, 
+                        selectedRect.bottom() - handleSize / 2, 
+                        handleSize, handleSize);
+        // 右下角
+        QRect bottomRight(selectedRect.right() - handleSize / 2, 
+                         selectedRect.bottom() - handleSize / 2, 
+                         handleSize, handleSize);
+        
+        painter.fillRect(topLeft, Qt::white);
+        painter.fillRect(topRight, Qt::white);
+        painter.fillRect(bottomLeft, Qt::white);
+        painter.fillRect(bottomRight, Qt::white);
+        
+        // 绘制选择区域的边框
+        painter.setPen(QPen(Qt::blue, 1, Qt::SolidLine));
+        painter.drawRect(selectedRect);
+        
+        // 绘制工具栏
+        if (m_toolBar) {
+            int toolBarX = selectedRect.left();
+            int toolBarY = selectedRect.bottom() + 10;
+            
+            if (toolBarY + m_toolBar->height() > height()) {
+                toolBarY = selectedRect.top() - m_toolBar->height() - 10;
+                if (toolBarY < 0) {
+                    toolBarY = 10;
+                }
+            }
+            
+            m_toolBar->move(toolBarX, toolBarY);
+            m_toolBar->show();
+        }
+        
+        // 应用已经绘制的项目
+        drawOnPainter(painter);
+    }
+}
+
+void ScreenshotWindow::mousePressEvent(QMouseEvent *event)
+{
+    // 如果不是截图模式，直接返回
+    if (!m_isScreenshotMode) return;
+
+    qDebug() << "鼠标按下，位置:" << event->pos()
+             << "m_hasSelected:" << m_hasSelected
+             << "m_currentMode:" << static_cast<int>(m_currentMode)
+             << "m_isSelecting:" << m_isSelecting;
+
+    if (event->button() == Qt::LeftButton) {
+        // 只在未选择区域时允许进入截图选择流程
+        if (!m_hasSelected) {
+            // 初次截图选择区域时
+            m_startPoint = event->pos();
+            m_endPoint = event->pos();
+            m_isSelecting = true;
+            m_rubberBand->setGeometry(QRect(m_startPoint, QSize()));
+            m_rubberBand->show();
+            qDebug() << "开始选择区域";
+        } else {
+            // 已经有选区，只允许绘制，不允许重新选择截图区域
+            if (m_maskRegion.contains(event->pos())) {
+                // 点击在遮罩区域内（即选区外），忽略这次点击事件
+                m_isSelecting = false;
+                qDebug() << "点击在遮罩区域内(选区外)，忽略此次点击";
+                event->accept();
+                return;
+            } else {
+                // 点击在已选区域内，处理绘制操作
+                m_startPoint = event->pos();
+                m_endPoint = event->pos();
+                m_isSelecting = true;
+                qDebug() << "在已选区域内开始绘制，当前模式:" << static_cast<int>(m_currentMode);
+                // 处理不同的绘图模式
+                switch (m_currentMode) {
+                    case DrawMode::Rectangle:
+                    case DrawMode::Circle:
+                    case DrawMode::Arrow:
+                        // 这些模式只需要记录起始点
+                        break;
+                    case DrawMode::Brush:
+                        m_currentBrushPoints.clear();
+                        m_currentBrushPoints.append(event->pos());
+                        break;
+                    case DrawMode::None:
+                        // 没有选择绘图模式，只是在选区内点击，不做特殊处理
+                        break;
+                    default:
+                        break;
+                }
+                event->accept();
+            }
+        }
+    }
+}
+
+void ScreenshotWindow::mouseMoveEvent(QMouseEvent *event)
+{
+    if (!m_isScreenshotMode) return;
+    
+    if (m_isSelecting && (event->buttons() & Qt::LeftButton)) {
+        m_endPoint = event->pos();
+        
+        if (!m_hasSelected) {
+            // 更新选择区域（仅在初次选择时）
+            m_rubberBand->setGeometry(QRect(m_startPoint, m_endPoint).normalized());
+        } else {
+            // 已经有选择区域，现在是在绘制
+            if (m_currentMode != DrawMode::None) {
+                // 所有绘图操作处理方式相同：记录终点并刷新
+                switch (m_currentMode) {
+                    case DrawMode::Rectangle:
+                    case DrawMode::Circle:
+                    case DrawMode::Arrow:
+                        // 记录终点并更新显示
+                        update();
+                        break;
+                    case DrawMode::Brush:
+                        // 添加到当前画笔路径并更新显示
+                        m_currentBrushPoints.append(event->pos());
+                        update();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+}
+
+void ScreenshotWindow::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (!m_isScreenshotMode) return;
+    
+    qDebug() << "鼠标释放，位置:" << event->pos() 
+             << "m_hasSelected:" << m_hasSelected 
+             << "m_isSelecting:" << m_isSelecting;
+    
+    if (event->button() == Qt::LeftButton && m_isSelecting) {
+        m_endPoint = event->pos();
+        m_isSelecting = false;
+        
+        if (!m_hasSelected) {
+            // 完成初次选择区域
+            m_hasSelected = true;
+            
+            // 确保选择的区域有合理大小
+            QRect rect = selectedRect();
+            if (rect.width() < 5 || rect.height() < 5) {
+                // 如果选择的区域太小，自动扩大
+                m_endPoint = m_startPoint + QPoint(100, 100);
+            }
+            
+            m_rubberBand->hide();
+            qDebug() << "完成选择区域:" << selectedRect();
+        } else if (m_currentMode != DrawMode::None) {
+            // 已选择区域 + 处于绘图模式：完成绘制
+            QRect selectedArea = selectedRect();
+            
+            // 只有在起始点在选区内时才添加绘制项目
+            // 避免在遮罩区域进行绘制操作
+            if (!m_maskRegion.contains(m_startPoint)) {
+                // 完成绘制
+                DrawItem item;
+                item.color = Qt::red; // 默认颜色
+                
+                qDebug() << "完成绘制，当前模式:" << static_cast<int>(m_currentMode);
+                
+                switch (m_currentMode) {
+                    case DrawMode::Rectangle:
+                        item.mode = DrawMode::Rectangle;
+                        item.rect = QRect(m_startPoint, m_endPoint).normalized();
+                        m_drawItems.append(item);
+                        break;
+                    case DrawMode::Circle:
+                        item.mode = DrawMode::Circle;
+                        item.rect = QRect(m_startPoint, m_endPoint).normalized();
+                        m_drawItems.append(item);
+                        break;
+                    case DrawMode::Arrow:
+                        item.mode = DrawMode::Arrow;
+                        item.start = m_startPoint;
+                        item.end = m_endPoint;
+                        m_drawItems.append(item);
+                        break;
+                    case DrawMode::Brush:
+                        if (m_currentBrushPoints.size() > 1) {
+                            item.mode = DrawMode::Brush;
+                            item.brushPoints = m_currentBrushPoints;
+                            m_drawItems.append(item);
+                        }
+                        // 无论是否添加，都要清空轨迹
+                        m_currentBrushPoints.clear();
+                        break;
+                    default:
+                        break;
+                }
+            } else {
+                qDebug() << "起始点在遮罩区域内，忽略绘制操作";
+                // 也要清空轨迹，防止残留
+                if (m_currentMode == DrawMode::Brush) {
+                    m_currentBrushPoints.clear();
+                }
+            }
+        }
+        
+        update();
+    }
+}
+
+void ScreenshotWindow::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Escape) {
+        // 按Esc键取消
+        cancelScreenshot();
+    } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+        // 按回车键完成
+        if (m_hasSelected) {
+            finishScreenshot();
+        }
+    } else if (event->key() == Qt::Key_C && event->modifiers() == Qt::ControlModifier) {
+        // Ctrl+C复制
+        if (m_hasSelected) {
+            finishScreenshot();
+        }
+    } else if (event->key() == Qt::Key_S && event->modifiers() == Qt::ControlModifier) {
+        // Ctrl+S保存
+        if (m_hasSelected) {
+            saveScreenshot();
+        }
+    } else if (event->key() == Qt::Key_Z && event->modifiers() == Qt::ControlModifier) {
+        // Ctrl+Z撤销
+        undo();
+    }
+}
+
+void ScreenshotWindow::closeEvent(QCloseEvent *event)
+{
+    // 在关闭窗口时取消截图
+    if (m_isScreenshotMode) {
+        cancelScreenshot();
+        event->ignore(); // 不实际关闭窗口
+    } else {
+        event->accept();
+    }
+}
+
+void ScreenshotWindow::quitApplication()
+{
+    qDebug() << "退出应用程序";
+    
+    // 安全退出，先隐藏所有UI元素
+    if (m_trayIcon) {
+        m_trayIcon->hide();
+    }
+    
+    hide();
+    
+    // 确保不会立即退出（尤其是在Wayland环境中）
+    bool isWayland = QGuiApplication::platformName().contains("wayland", Qt::CaseInsensitive);
+    if (isWayland) {
+        qDebug() << "Wayland环境下安全退出";
+        // 使用异步延迟退出，让其他操作有机会完成
+        QTimer::singleShot(500, []() {
+            qDebug() << "执行实际的退出操作";
+            QCoreApplication::quit();
+        });
+    } else {
+        QCoreApplication::quit();
+    }
 }
