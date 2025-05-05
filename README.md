@@ -9,10 +9,10 @@
 
 #### 如何编译运行
 1.编译
-cd /home/xxx/Projects/Screenshot/build && ninja
+`cd /home/xxx/Projects/Screenshot/build && ninja`
 
 2.运行
-/home/xxx/Projects/Screenshot/build/ScreenshotLinux
+`/home/xxx/Projects/Screenshot/build/ScreenshotLinux`
 此时会在系统托盘显示截图工具图标
 
 #### 如何使用
